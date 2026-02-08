@@ -120,6 +120,7 @@ class IniFileHandler(FileSystemEventHandler):
                         {f'<image placement="appLogoOverride" src="file:///{icon_path}"/>' if icon_path and icon_path.exists() else ''}
                     </binding>
                 </visual>
+                <audio src="ms-winsoundevent:Notification.Achievement"/>
             </toast>
             '''
             
@@ -269,8 +270,8 @@ class IniFileHandler(FileSystemEventHandler):
 
 def main():
     # File paths - adjust these to your actual paths
-    source_file = "stats.ini"
-    target_file = "achievements.ini"
+    source_file = r"C:\Steam\Player\287700\stats\stats.ini"
+    target_file = r"C:\Users\Public\Documents\Steam\CODEX\287700\achievements.ini"
     achievements_json = "achievements.json"  # Path to achievements metadata JSON
     
     print("=" * 60)
