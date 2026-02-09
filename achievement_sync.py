@@ -2,6 +2,8 @@ import time
 import configparser
 import struct
 import json
+import hashlib
+import threading
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -22,9 +24,11 @@ class IniFileHandler(FileSystemEventHandler):
         self.source_file = Path(source_file).resolve()
         self.target_file = Path(target_file).resolve()
         self.achievements_json_file = Path(achievements_json_file).resolve() if achievements_json_file else None
-        self.last_modified = 0
+        self.last_content_hash = None  # Track file content hash instead of time
         self.known_trophies = set()  # Track trophies we've already seen
         self.achievements_data = {}  # Store achievement metadata
+        self.retry_timer = None  # Timer for retry mechanism
+        self.processing_lock = threading.Lock()  # Prevent concurrent processing
         
         # Load achievements metadata
         if self.achievements_json_file and self.achievements_json_file.exists():
@@ -47,20 +51,65 @@ class IniFileHandler(FileSystemEventHandler):
         if hasattr(event, 'dest_path'):
             self._handle_change(event.dest_path)
     
+    def _get_file_hash(self):
+        """Get MD5 hash of file content for content-based debouncing"""
+        try:
+            with open(self.source_file, 'rb') as f:
+                content = f.read()
+                return hashlib.md5(content).hexdigest()
+        except Exception as e:
+            print(f"Error reading file for hash: {e}")
+            return None
+    
     def _handle_change(self, changed_path):
-        """Handle file change events"""
+        """Handle file change events with content-based debouncing"""
         # Convert to absolute path for comparison
         event_path = Path(changed_path).resolve()
         
-        if event_path == self.source_file:
-            # Debounce: ignore rapid successive modifications
-            current_time = time.time()
-            if current_time - self.last_modified < 0.5:
-                return
-            self.last_modified = current_time
+        if event_path != self.source_file:
+            return
+        
+        # Cancel any pending retry
+        if self.retry_timer:
+            self.retry_timer.cancel()
+            self.retry_timer = None
+        
+        # Get current file content hash
+        current_hash = self._get_file_hash()
+        
+        # If hash is the same as last time, ignore (content hasn't actually changed)
+        if current_hash == self.last_content_hash:
+            print(f"[{time.strftime('%H:%M:%S')}] File event detected but content unchanged, ignoring")
+            return
+        
+        # Content has changed, update hash and process
+        self.last_content_hash = current_hash
+        print(f"[{time.strftime('%H:%M:%S')}] Detected change in {self.source_file.name}")
+        
+        # Process with lock to prevent concurrent runs
+        self._process_file()
+    
+    def _process_file(self, is_retry=False):
+        """Process the stats.ini file"""
+        with self.processing_lock:
+            result = self.sync_achievements()
             
-            print(f"[{time.strftime('%H:%M:%S')}] Detected change in {self.source_file.name}")
-            self.sync_achievements()
+            # If sync found no trophies and this isn't already a retry, schedule a retry
+            if result == "empty" and not is_retry:
+                print(f"[{time.strftime('%H:%M:%S')}] File appears incomplete, will retry in 1 second...")
+                self.retry_timer = threading.Timer(1.0, self._retry_process)
+                self.retry_timer.daemon = True
+                self.retry_timer.start()
+    
+    def _retry_process(self):
+        """Retry processing the file after a delay"""
+        print(f"[{time.strftime('%H:%M:%S')}] Retrying file read...")
+        
+        # Update hash before retry so we don't skip it
+        self.last_content_hash = self._get_file_hash()
+        
+        # Process again with retry flag
+        self._process_file(is_retry=True)
     
     def load_achievements_metadata(self):
         """Load achievement metadata from JSON file"""
@@ -117,7 +166,7 @@ class IniFileHandler(FileSystemEventHandler):
                     <binding template="ToastGeneric">
                         <text>{display_name}</text>
                         <text>{description}</text>
-                        {f'<image placement="appLogoOverride" src="file:///{icon_path}"/>' if icon_path and icon_path.exists() else ''}
+                        {f'<image placement="appLogoOverride" hint-crop="circle" src="file:///{icon_path}"/>' if icon_path and icon_path.exists() else ''}
                     </binding>
                 </visual>
                 <audio src="ms-winsoundevent:Notification.Achievement"/>
@@ -201,14 +250,17 @@ class IniFileHandler(FileSystemEventHandler):
         return trophies
     
     def sync_achievements(self):
-        """Sync trophies from stats.ini to achievements.ini"""
+        """
+        Sync trophies from stats.ini to achievements.ini
+        Returns: "success", "empty", or "error"
+        """
         try:
             # Read source trophies
             source_trophies = self.read_stat_ini()
             
             if not source_trophies:
                 print("No trophies found in stats.ini")
-                return
+                return "empty"
             
             # Detect new trophies (not in known_trophies set)
             new_trophies = []
@@ -264,8 +316,11 @@ class IniFileHandler(FileSystemEventHandler):
                 print(f"🏆 New achievement unlocked: {trophy_name}")
                 self.send_toast_notification(trophy_name)
             
+            return "success"
+            
         except Exception as e:
             print(f"Error syncing achievements: {e}")
+            return "error"
 
 
 def main():
