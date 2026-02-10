@@ -20,10 +20,11 @@ except ImportError:
 class IniFileHandler(FileSystemEventHandler):
     """Handler for monitoring changes to stats.ini"""
     
-    def __init__(self, source_file, target_file, achievements_json_file=None):
+    def __init__(self, source_file, target_file, achievements_json_file=None, send_toast=True):
         self.source_file = Path(source_file).resolve()
         self.target_file = Path(target_file).resolve()
         self.achievements_json_file = Path(achievements_json_file).resolve() if achievements_json_file else None
+        self.send_toast = send_toast
         self.last_content_hash = None  # Track file content hash instead of time
         self.known_trophies = set()  # Track trophies we've already seen
         self.achievements_data = {}  # Store achievement metadata
@@ -141,6 +142,10 @@ class IniFileHandler(FileSystemEventHandler):
     
     def send_toast_notification(self, trophy_name):
         """Send a Windows toast notification for a new achievement"""
+        if not self.send_toast:
+            print(f"[NOTIFICATION DISABLED] New trophy: {trophy_name}")
+            return
+            
         if not WINRT_AVAILABLE:
             print(f"[NOTIFICATION] New trophy: {trophy_name}")
             return
@@ -323,11 +328,59 @@ class IniFileHandler(FileSystemEventHandler):
             return "error"
 
 
+def load_settings():
+    """Load settings from settings.ini file"""
+    settings_file = Path("settings.ini")
+    
+    # Default settings
+    default_settings = {
+        'source_file': 'stats.ini',
+        'target_file': 'achievements.ini',
+        'achievements_json': 'achievements.json',
+        'send_toast': 'true'
+    }
+    
+    if not settings_file.exists():
+        print(f"Settings file not found, creating default settings.ini...")
+        # Create default settings file
+        config = configparser.ConfigParser()
+        config['Settings'] = default_settings
+        with open(settings_file, 'w') as f:
+            config.write(f)
+        print(f"✓ Created settings.ini with default values\n")
+        return default_settings
+    
+    try:
+        config = configparser.ConfigParser()
+        config.read(settings_file)
+        
+        if not config.has_section('Settings'):
+            print("Warning: settings.ini missing [Settings] section, using defaults")
+            return default_settings
+        
+        settings = {
+            'source_file': config.get('Settings', 'source_file', fallback=default_settings['source_file']),
+            'target_file': config.get('Settings', 'target_file', fallback=default_settings['target_file']),
+            'achievements_json': config.get('Settings', 'achievements_json', fallback=default_settings['achievements_json']),
+            'send_toast': config.get('Settings', 'send_toast', fallback=default_settings['send_toast'])
+        }
+        
+        return settings
+        
+    except Exception as e:
+        print(f"Error reading settings.ini: {e}")
+        print("Using default settings")
+        return default_settings
+
+
 def main():
-    # File paths - adjust these to your actual paths
-    source_file = r"C:\Steam\Player\287700\stats\stats.ini"
-    target_file = r"C:\Users\Public\Documents\Steam\CODEX\287700\achievements.ini"
-    achievements_json = "achievements.json"  # Path to achievements metadata JSON
+    # Load settings from settings.ini
+    settings = load_settings()
+    
+    source_file = settings['source_file']
+    target_file = settings['target_file']
+    achievements_json = settings['achievements_json']
+    send_toast = settings['send_toast'].lower() in ('true', 'yes', '1', 'on')
     
     print("=" * 60)
     print("Achievement Sync Watcher")
@@ -335,10 +388,11 @@ def main():
     print(f"Monitoring: {Path(source_file).resolve()}")
     print(f"Target: {Path(target_file).resolve()}")
     print(f"Metadata: {Path(achievements_json).resolve()}")
+    print(f"Toast notifications: {'Enabled' if send_toast else 'Disabled'}")
     print("Press Ctrl+C to stop...\n")
     
     # Create handler and observer
-    event_handler = IniFileHandler(source_file, target_file, achievements_json)
+    event_handler = IniFileHandler(source_file, target_file, achievements_json, send_toast)
     observer = Observer()
     
     # Watch the directory containing the source file
